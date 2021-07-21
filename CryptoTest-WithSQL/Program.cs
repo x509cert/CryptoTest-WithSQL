@@ -1,13 +1,14 @@
 ﻿using System;
 using System.IO;
 using System.Text;
+using Azure.Core;
 using Azure.Identity;
 using Microsoft.Data.Encryption.Cryptography;
 using Microsoft.Data.Encryption.Cryptography.Serializers;
 using Azure.Security.KeyVault.Secrets;
 using Microsoft.Data.SqlClient;
 
-string fileIn = @"c:\lotr\lotr.csv";
+const string fileIn = @"c:\lotr\lotr.csv";
 
 #region Setup (Azure login, AKV and crypto settings)
 
@@ -31,15 +32,15 @@ var encryptionSettings = new EncryptionSettings<string>(
 
 #endregion
 
-#region Read from CSV File, encrypt and save the CSV file
+#region Read from CSV File, encrypt and save to Azure SQL
 
 // read all entries from the CSV file, and encrypt the last element (SSN)
 var recordsIn = File.ReadAllLines(fileIn);
 var temp = new StringBuilder();
 
-string connectionString = "Data Source=sql-cryptotest.database.windows.net; Initial Catalog=LoTR;";
+var connectionString = "Data Source=sql-cryptotest.database.windows.net; Initial Catalog=LoTR;";
 var conn = new SqlConnection(connectionString);
-conn.AccessToken = creds.GetToken(new TokenRequestContext(new[] {"https://database.windows.net/.default"})).Token;
+conn.AccessToken = creds.GetToken(new TokenRequestContext(new[]{"https://database.windows.net/.default"})).Token;
 conn.Open();
 
 for (int i = 0; i < recordsIn.Length; i++)
@@ -47,19 +48,23 @@ for (int i = 0; i < recordsIn.Length; i++)
     string[] elem = recordsIn[i].Split(',');
     if (elem.Length <= 1) break;
 
-    //headers
-    if (i == 0)
+    // skip column headers
+    if (i > 0)
     {
-        temp.AppendLine(recordsIn[i]);
-    }
-    // data
-    else
-    {
-        temp.AppendLine(elem[0] + "," + elem[1] + "," +
-            (encrypt ? Convert.ToBase64String(elem[2].Encrypt(encryptionSettings))
-                     : Convert.FromBase64String(elem[2]).Decrypt<string>(encryptionSettings)));
+        const string stmt = "INSERT into Characters VALUES (@name, @location, @ssn)";
+        var cmd = new SqlCommand(stmt, conn);
+
+        cmd.Parameters.AddWithValue("@name", elem[0]);
+        cmd.Parameters.AddWithValue("@location", elem[1]);
+        cmd.Parameters.AddWithValue("@ssn", Convert.ToBase64String(elem[2].Encrypt(encryptionSettings)));
+
+        cmd.ExecuteNonQuery();
+
+        cmd.Dispose();
     }
 }
+
+conn.Close();
 
 #endregion
 
